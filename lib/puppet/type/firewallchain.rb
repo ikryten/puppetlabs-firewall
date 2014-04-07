@@ -146,17 +146,6 @@ Puppet::Type.newtype(:firewallchain) do
     end
   end
 
-  # Classes would be a better abstraction, pending:
-  # http://projects.puppetlabs.com/issues/19001
-  autorequire(:package) do
-    case value(:provider)
-    when :iptables_chain
-      %w{iptables iptables-persistent}
-    else
-      []
-    end
-  end
-
   validate do
     debug("[validate]")
 
@@ -194,9 +183,11 @@ Puppet::Type.newtype(:firewallchain) do
     return [] unless self.purge?
 
     value(:name).match(Nameformat)
+
     chain = $1
     table = $2
     protocol = $3
+    @@rule_resources ||= Hash.new 
 
     provider = case protocol
                when 'IPv4'
@@ -205,8 +196,17 @@ Puppet::Type.newtype(:firewallchain) do
                  :ip6tables
                end
 
+    type = case protocol
+           when 'IPv4'
+             :firewall
+           when 'IPv6'
+             :firewall6
+           end
+
     # gather a list of all rules present on the system
-    rules_resources = Puppet::Type.type(:firewall).instances
+    @@rule_resources[type] ||= Puppet::Type.type(type).instances
+
+    rules_resources = (@@rule_resources[type]).dup
 
     # Keep only rules in this chain
     rules_resources.delete_if { |res| (res[:provider] != provider or res.provider.properties[:table].to_s != table or res.provider.properties[:chain] != chain) }

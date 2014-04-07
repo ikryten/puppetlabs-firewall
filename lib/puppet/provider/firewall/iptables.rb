@@ -18,6 +18,7 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
   has_feature :reject_type
   has_feature :log_level
   has_feature :log_prefix
+  has_feature :log_uid
   has_feature :mark
   has_feature :tcp_flags
   has_feature :pkttype
@@ -52,12 +53,15 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
     :dst_range => "-m iprange --dst-range",
     :dport => ["-m multiport --dports", "--dport"],
     :gid => "-m owner --gid-owner",
+    :hex_string => "-m string --hex-string",
     :icmp => "-m icmp --icmp-type",
     :iniface => "-i",
+    :ipset => "-m set --match-set",
     :jump => "-j",
     :limit => "-m limit --limit",
     :log_level => "--log-level",
     :log_prefix => "--log-prefix",
+    :log_uid => "--log-uid",
     :name => "-m comment --comment",
     :outiface => "-o",
     :port => '-m multiport --ports',
@@ -79,6 +83,10 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
     :src_range => "-m iprange --src-range",
     :sport => ["-m multiport --sports", "--sport"],
     :state => "-m state --state",
+    :string => "-m string --string",
+    :string_algo => "--algo",
+    :string_from => "--from",
+    :string_to   => "--to",
     :table => "-t",
     :tcp_flags => "-m tcp --tcp-flags",
     :todest => "--to-destination",
@@ -95,6 +103,7 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
   # to true if they exist.
   @known_booleans = [
     :isfragment,
+    :log_uid,
     :random,
     :rdest,
     :reap,
@@ -105,7 +114,7 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
 
 
   # Create property methods dynamically
-  (@resource_map.keys << :chain << :table << :action).each do |property|
+  (@resource_map.keys << :chain << :table << :action << :line << :string_offset).each do |property|
     if @known_booleans.include?(property) then
       # The boolean properties default to '' which should be read as false
       define_method "#{property}" do
@@ -137,11 +146,11 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
   # This order can be determined by going through iptables source code or just tweaking and trying manually
   @resource_list = [
     :table, :source, :destination, :iniface, :outiface, :proto, :isfragment,
-    :src_range, :dst_range, :tcp_flags, :gid, :uid, :sport, :dport, :port,
+    :src_range, :dst_range, :tcp_flags, :gid, :uid, :sport, :dport, :port, :ipset,
     :dst_type, :src_type, :socket, :pkttype, :name, :ipsec_dir, :ipsec_policy,
     :state, :ctstate, :icmp, :limit, :burst, :recent, :rseconds, :reap,
     :rhitcount, :rttl, :rname, :rsource, :rdest, :jump, :todest, :tosource,
-    :toports, :random, :log_prefix, :log_level, :reject, :set_mark
+    :toports, :random, :log_prefix, :log_level, :log_uid, :reject, :set_mark
   ]
 
   def insert
@@ -208,6 +217,8 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
     # --tcp-flags takes two values; we cheat by adding " around it
     # so it behaves like --comment
     values = values.sub(/--tcp-flags (\S*) (\S*)/, '--tcp-flags "\1 \2"')
+    # --match-set also takes two values
+    values = values.sub(/--match-set (\S*) (\S*)/, '--match-set "\1 \2"')
     # we do a similar thing for negated address masks (source and destination).
     values = values.sub(/(-\S+) (!)\s?(\S*)/,'\1 "\2 \3"')
     # the actual rule will have the ! mark before the option.
@@ -305,16 +316,16 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
     hash[:state]   = hash[:state].sort   unless hash[:state].nil?
     hash[:ctstate] = hash[:ctstate].sort unless hash[:ctstate].nil?
 
-    # This forces all existing, commentless rules or rules with invalid comments to be moved 
+    # This forces all existing, commentless rules or rules with invalid comments to be moved
     # to the bottom of the stack.
-    # Puppet-firewall requires that all rules have comments (resource names) and match this 
-    # regex and will fail if a rule in iptables does not have a comment. We get around this 
+    # Puppet-firewall requires that all rules have comments (resource names) and match this
+    # regex and will fail if a rule in iptables does not have a comment. We get around this
     # by appending a high level
     if ! hash[:name]
-      num = 9000 + counter
+      num = 90000 + counter
       hash[:name] = "#{num} #{Digest::MD5.hexdigest(line)}"
-    elsif not /^\d+[[:alpha:][:digit:][:punct:][:space:]]+$/ =~ hash[:name]
-      num = 9000 + counter
+    elsif not /^\d{5}[[:alpha:][:digit:][:punct:][:space:]]+$/ =~ hash[:name]
+      num = 90000 + counter
       hash[:name] = "#{num} #{/([[:alpha:][:digit:][:punct:][:space:]]+)/.match(hash[:name])[1]}"
     end
 
@@ -365,9 +376,9 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
   end
 
   def delete_args
-    # Split into arguments
-    line = properties[:line].gsub(/\-A/, '-D').split(/\s(?=(?:[^"]|"[^"]*")*$)/).map{|v| v.gsub(/"/, '')}
-    line.unshift("-t", properties[:table])
+    args = []
+    args << ["-t", properties[:table], "-D", properties[:chain], delete_order]
+    args
   end
 
   # This method takes the resource, and attempts to generate the command line
@@ -422,7 +433,7 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
       # our tcp_flags takes a single string with comma lists separated
       # by space
       # --tcp-flags expects two arguments
-      if res == :tcp_flags
+      if res == :tcp_flags || res == :ipset
         one, two = resource_value.split(' ')
         args << one
         args << two
@@ -490,5 +501,21 @@ Puppet::Type.type(:firewall).provide :iptables, :parent => Puppet::Provider::Fir
     # Insert our new or updated rule in the correct order of named rules, but
     # offset for unnamed rules.
     rules.reject{|r|r.match(unmanaged_rule_regex)}.sort.index(my_rule) + 1 + unnamed_offset
+  end
+
+  def delete_order
+    debug("[delete_order]")
+    rules = []
+    # Find list of current rules based on chain and table
+    self.class.instances.each do |rule|
+      if rule.chain == properties[:chain].to_s and rule.table == properties[:table].to_s
+        rules << rule.line
+      end
+    end
+
+    # No rules at all? Just bail now.
+    return 1 if rules.empty?
+
+    rules.index(properties[:line]) + 1
   end
 end

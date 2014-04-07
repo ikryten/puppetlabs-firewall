@@ -1,4 +1,4 @@
-Puppet::Type.type(:firewall).provide :ip6tables, :parent => :iptables, :source => :iptables do
+Puppet::Type.type(:firewall6).provide :ip6tables, :parent => Puppet::Type.type(:firewall).provider(:iptables), :source => Puppet::Type.type(:firewall).provider(:iptables) do
   @doc = "Ip6tables type provider"
 
   has_feature :iptables
@@ -26,6 +26,8 @@ Puppet::Type.type(:firewall).provide :ip6tables, :parent => :iptables, :source =
     :ip6tables      => 'ip6tables',
     :ip6tables_save => 'ip6tables-save',
   })
+
+  defaultfor :kernel => :linux
 
   def initialize(*args)
     if Facter.fact('ip6tables_version').value.match /1\.3\.\d/

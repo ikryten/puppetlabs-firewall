@@ -9,7 +9,7 @@
 $LOAD_PATH.unshift(File.join(File.dirname(__FILE__),"..",".."))
 require 'puppet/util/firewall'
 
-Puppet::Type.newtype(:firewall) do
+Puppet::Type.newtype(:firewall6) do
   include Puppet::Util::Firewall
 
   @doc = <<-EOS
